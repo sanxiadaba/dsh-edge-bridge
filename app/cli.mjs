@@ -44,6 +44,11 @@ const BOOL_FLAGS = new Set([
   'landscape',
   'no-await',
   'offline',
+  'hard',
+  'maximize',
+  'minimize',
+  'fullscreen',
+  'normal',
   'live',
   'no-shortcuts',
 ]);
@@ -366,7 +371,14 @@ LIVE — your daily Edge profile, full CDP (no extension)
 
 PAGE
   open <url>                     Navigate the active tab (alias: goto, navigate)
+  back | forward                 Go back/forward in tab history
+  reload [--hard]                Reload the active tab (--hard bypasses cache)
+  history                        Show the active tab's navigation history
+  window [--maximize|--minimize] [--width px --height px]
+                                 Get or set the browser window bounds
+  frames                         List frames (main document + iframes)
   eval <js> | --file <path>      Evaluate JavaScript, print the value
+                                 --frame <id|url> evaluates inside an iframe
   text [selector]                Visible text of the page or element
   html [selector]                HTML of the page or element
   snapshot                       Accessibility tree of the page
@@ -396,7 +408,8 @@ DEBUG
   downloads                      List downloads
 
 COMMON FLAGS
-  --tab <id|index|title-substring|active>   Target tab
+  --tab <id|url-substring|index|active>      Target tab
+  --frame <id|url-substring>                 iframe for eval/text/html/wait
   --json                                     Machine-readable output
   --timeout <ms>                             Request timeout
 
@@ -424,8 +437,6 @@ async function main() {
       cmd = 'live-restart';
     } else if (sub === 'status') {
       cmd = 'live-status';
-    } else if (sub === 'wait') {
-      cmd = 'live-wait';
     } else {
       flags.live = true;
       cmd = sub;
@@ -611,6 +622,60 @@ async function main() {
       return;
     }
 
+    case 'history': {
+      const data = await call('/history', {}, flags);
+      emit(flags, data, (d) => {
+        for (const e of d.entries) {
+          process.stdout.write(`${e.index === d.currentIndex ? '*' : ' '} ${e.index}  ${clip(e.title || '', 60)}  ${clip(e.url, 120)}\n`);
+        }
+      });
+      return;
+    }
+
+    case 'back':
+    case 'forward':
+    case 'reload': {
+      const pathname = `/${cmd}`;
+      const body = { tab: flags.tab, wait: !flags['no-wait'], timeout: Number(flags.timeout || 30000) };
+      if (cmd === 'reload') body.ignoreCache = Boolean(flags.hard);
+      const data = await call(pathname, body, flags);
+      emit(flags, data, (d) => {
+        process.stdout.write(`${d.url}\n`);
+        if (d.title) process.stdout.write(`${d.title}\n`);
+      });
+      return;
+    }
+
+    case 'window': {
+      let action;
+      if (flags.maximize) action = 'maximize';
+      else if (flags.minimize) action = 'minimize';
+      else if (flags.fullscreen) action = 'fullscreen';
+      else if (flags.normal || flags.width || flags.height || flags.left || flags.top) action = 'normal';
+      const body = { tab: flags.tab, action };
+      for (const key of ['width', 'height', 'left', 'top']) {
+        if (flags[key] !== undefined) body[key] = Number(flags[key]);
+      }
+      const data = await call('/window', body, flags);
+      emit(flags, data, (d) => {
+        const b = d.bounds || {};
+        process.stdout.write(
+          `window ${d.windowId}  state=${b.windowState || '?'}  ${b.width ?? '?'}x${b.height ?? '?'}  at ${b.left ?? '?'},${b.top ?? '?'}\n`,
+        );
+      });
+      return;
+    }
+
+    case 'frames': {
+      const data = await call('/frames', {}, flags);
+      emit(flags, data, (d) => {
+        for (const f of d.frames) {
+          process.stdout.write(`${'  '.repeat(f.depth)}${String(f.id).slice(0, 8)}  ${clip(f.name || '', 40)}  ${clip(f.url, 110)}\n`);
+        }
+      });
+      return;
+    }
+
     case 'eval':
     case 'js': {
       let expression = pos.join(' ');
@@ -621,6 +686,7 @@ async function main() {
         expression,
         awaitPromise: !flags['no-await'],
         returnByValue: true,
+        frame: flags.frame,
         timeout: Number(flags.timeout || 120000),
       }, flags);
       emit(flags, data, (d) => {
@@ -722,6 +788,7 @@ async function main() {
         tab: flags.tab,
         selector,
         fn,
+        frame: flags.frame,
         timeout: Number(flags.timeout || 20000),
       }, flags);
       emit(flags, data, () => process.stdout.write('ready\n'));
@@ -729,7 +796,7 @@ async function main() {
     }
 
     case 'text': {
-      const data = await call('/text', { tab: flags.tab, selector: pos[0] || flags.selector }, flags);
+      const data = await call('/text', { tab: flags.tab, selector: pos[0] || flags.selector, frame: flags.frame }, flags);
       emit(flags, data, (d) => process.stdout.write(d.text + '\n'));
       return;
     }
@@ -739,6 +806,7 @@ async function main() {
         tab: flags.tab,
         selector: pos[0] || flags.selector,
         outer: !flags.inner,
+        frame: flags.frame,
       }, flags);
       emit(flags, data, (d) => process.stdout.write(d.html + '\n'));
       return;
@@ -961,7 +1029,7 @@ async function main() {
     }
 
     case 'version': {
-      process.stdout.write('dshedge 1.1.1\n');
+      process.stdout.write('dshedge 1.2.0\n');
       return;
     }
 
@@ -976,7 +1044,3 @@ main().catch((err) => {
   process.stderr.write(`error: ${err.message}\n`);
   process.exitCode = 1;
 });
-
-
-
-

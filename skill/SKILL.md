@@ -112,8 +112,10 @@ Prefix each command with `live` to target the daily browser (for example
 | --- | --- |
 | Start / stop | `dshedge start [url]`, `dshedge stop [--edge]` |
 | Tabs | `dshedge tabs`, `new <url>`, `activate <tab>`, `close [tab]` |
-| Navigate | `dshedge open <url>` (alias `goto`) |
-| JavaScript | `dshedge eval "<expr>"`, `--file script.js` |
+| Navigate | `dshedge open <url>` (alias `goto`), `back`, `forward`, `reload [--hard]`, `history` |
+| Window | `dshedge window [--maximize|--minimize|--normal] [--width px --height px]` |
+| Frames | `dshedge frames`; `eval/text/html/wait --frame <id|url>` |
+| JavaScript | `dshedge eval "<expr>"`, `--file script.js`, `--frame <id|url>` |
 | Read page | `dshedge snapshot`, `text [sel]`, `html [sel]` |
 | Screenshot | `dshedge shot [path] [--full] [--selector sel]` |
 | Click | `dshedge click "<selector>"` (or `--x/--y`) |

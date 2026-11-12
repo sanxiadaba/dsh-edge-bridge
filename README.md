@@ -16,6 +16,8 @@ client over a local, token-authenticated HTTP API.
 - Persistent, visible Edge instance; survives CLI invocations and DSH restarts
 - Two profile backends: daily browser and automation profile
 - Real mouse/key input, DOM/JS evaluation, accessibility tree, text/HTML
+- History navigation (back/forward/reload), tab history and window bounds
+- Frame listing and frame-scoped `eval` / `text` / `html` / `wait`
 - Screenshots (viewport, element, full page), PDF, uploads, downloads
 - Console, exceptions, network requests and response bodies
 - Cookies, localStorage/sessionStorage, dialogs, device/network emulation
@@ -92,7 +94,9 @@ sign-in settings to that path and will invalidate them when it changes.
 | Daily browser | prefix any page command with `live` |
 | Start / status | `dshedge live ensure`, `dshedge status` |
 | Tabs | `tabs`, `new <url>`, `activate <tab>`, `close [tab]` |
-| Navigate | `open <url>` |
+| Navigate | `open <url>`, `back`, `forward`, `reload [--hard]`, `history` |
+| Window | `window [--maximize|--minimize|--normal] [--width px --height px]` |
+| Frames | `frames`; `eval/text/html/wait --frame <id|url>` |
 | JavaScript | `eval "<expr>"`, `--file script.js` |
 | Read | `snapshot`, `text [sel]`, `html [sel]` |
 | Screenshot / PDF | `shot [path] [--full]`, `pdf [path]` |
@@ -130,9 +134,9 @@ open or close.
 
 - Windows only (Edge discovery and process management are Windows-specific).
 - One Edge instance per profile; the port must be free.
-- Page helpers (`eval`, `click`, `text`, ...) operate on the top frame. Use raw
-  browser-level CDP (`--tab browser`) with `Target` sessions for OOPIF, iframe
-  internals or service workers.
+- Page helpers (`eval`, `click`, `text`, ...) operate on the top frame. Same-process
+  iframes can be read with `frames` and `--frame`; OOPIF/cross-origin frames and
+  service workers need raw browser-level CDP (`--tab browser`) with `Target` sessions.
 - The CLI remembers tabs it activated or opened. If you switch tabs manually, use a
   URL substring or full tab id instead of `--tab active`.
 - `chrome-extension://` and `edge://` targets may be restricted by Edge regardless of

@@ -145,7 +145,12 @@ automation profile. The CLI adds this automatically for `dshedge live ...`.
 | `POST /tabs/activate` | `{tab}` |
 | `POST /tabs/close` | `{tab}` |
 | `POST /navigate` | `{tab?, url, wait?, timeout?}` |
-| `POST /eval` | `{tab?, expression, awaitPromise?, timeout?}` |
+| `POST /back` / `/forward` | `{tab?, wait?, timeout?}` |
+| `POST /reload` | `{tab?, ignoreCache?, wait?, timeout?}` |
+| `POST /history` | `{tab?}` |
+| `POST /window` | `{tab?, action?, left?, top?, width?, height?}` |
+| `POST /frames` | `{tab?}` |
+| `POST /eval` | `{tab?, expression, awaitPromise?, timeout?, frame?}` |
 | `POST /screenshot` | `{tab?, file?, fullPage?, selector?, format?, quality?}` |
 | `POST /click` | `{tab?, selector?, x?, y?, button?, count?, force?}` |
 | `POST /type` | `{tab?, selector?, text, clear?, submit?, delay?}` |

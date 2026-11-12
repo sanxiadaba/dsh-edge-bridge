@@ -32,7 +32,7 @@ const LIVE_CDP_PORT = Number(process.env.DSH_EDGE_LIVE_CDP_PORT || 9449);
 const BRIDGE_PORT = Number(process.env.DSH_EDGE_BRIDGE_PORT || 9333);
 const CDP_PORT = Number(process.env.DSH_EDGE_CDP_PORT || 9334);
 const CDP_ORIGIN = `http://127.0.0.1:${CDP_PORT}`;
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const stateToken = crypto.randomBytes(24).toString('hex');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -436,6 +436,40 @@ class Browser {
   async navigate(ref, url, opts) {
     const page = await this.resolve(ref);
     return page.navigate(url, opts);
+  }
+
+  async window(ref) {
+    const page = await this.resolve(ref);
+    const { windowId, bounds } = await this.browserCdp.send('Browser.getWindowForTarget', { targetId: page.id });
+    return { tab: page.id, windowId, bounds };
+  }
+
+  async setWindow(ref, { action, left, top, width, height } = {}) {
+    const page = await this.resolve(ref);
+    const { windowId } = await this.browserCdp.send('Browser.getWindowForTarget', { targetId: page.id });
+    let bounds;
+    if (action === 'maximize') bounds = { windowState: 'maximized' };
+    else if (action === 'minimize') bounds = { windowState: 'minimized' };
+    else if (action === 'fullscreen') bounds = { windowState: 'fullscreen' };
+    else {
+      // Edge ignores width/height when they are sent together with windowState.
+      await this.browserCdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      const geo = {};
+      if (Number.isFinite(left)) geo.left = left;
+      if (Number.isFinite(top)) geo.top = top;
+      if (Number.isFinite(width)) geo.width = width;
+      if (Number.isFinite(height)) geo.height = height;
+      if (Object.keys(geo).length) {
+        await this.browserCdp.send('Browser.setWindowBounds', { windowId, bounds: geo });
+      }
+      await sleep(150);
+      const after = await this.browserCdp.send('Browser.getWindowBounds', { windowId }).catch(() => null);
+      return { tab: page.id, windowId, bounds: after?.bounds || { windowState: 'normal' } };
+    }
+    await this.browserCdp.send('Browser.setWindowBounds', { windowId, bounds });
+    await sleep(150);
+    const after = await this.browserCdp.send('Browser.getWindowBounds', { windowId }).catch(() => null);
+    return { tab: page.id, windowId, bounds: after?.bounds || bounds };
   }
 
   async closeBrowser() {
@@ -903,6 +937,52 @@ const routes = {
     return { ok: true, ...(await page.navigate(body.url, body)) };
   },
 
+  '/history': async (body) => {
+    const page = await resolvePage(body);
+    return { ok: true, tab: page.id, ...(await page.history()) };
+  },
+
+  '/back': async (body) => {
+    const page = await resolvePage(body);
+    const result = await page.back({ wait: body.wait !== false, timeout: Number(body.timeout || 30000) });
+    return { ok: true, ...result };
+  },
+
+  '/forward': async (body) => {
+    const page = await resolvePage(body);
+    const result = await page.forward({ wait: body.wait !== false, timeout: Number(body.timeout || 30000) });
+    return { ok: true, ...result };
+  },
+
+  '/reload': async (body) => {
+    const page = await resolvePage(body);
+    const result = await page.reload({
+      ignoreCache: body.ignoreCache === true,
+      wait: body.wait !== false,
+      timeout: Number(body.timeout || 30000),
+    });
+    return { ok: true, ...result };
+  },
+
+  '/window': async (body) => {
+    const target = body.live ? liveBrowser : browser;
+    if (!target.browserCdp?.connected) await target.ensure();
+    if (!body.action) return { ok: true, ...(await target.window(body.tab)) };
+    const result = await target.setWindow(body.tab, {
+      action: body.action,
+      left: Number(body.left),
+      top: Number(body.top),
+      width: Number(body.width),
+      height: Number(body.height),
+    });
+    return { ok: true, ...result };
+  },
+
+  '/frames': async (body) => {
+    const page = await resolvePage(body);
+    return { ok: true, tab: page.id, frames: await page.frames() };
+  },
+
   '/eval': async (body) => {
     if (!body.expression) throw new Error('eval needs expression');
     const page = await resolvePage(body);
@@ -1080,7 +1160,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
 
   if (url.pathname === '/ext-update.xml') {
-    let version = '1.1.1';
+    let version = '1.2.0';
     try {
       version = JSON.parse(fs.readFileSync(path.join(EXT_DIR, 'manifest.json'), 'utf8')).version || version;
     } catch {
@@ -1255,6 +1335,3 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     setTimeout(() => process.exit(0), 1000);
   });
 }
-
-
-

@@ -298,20 +298,57 @@ export class PageSession {
     }
   }
 
+  async frames() {
+    const { frameTree } = await this.cdp.send('Page.getFrameTree');
+    const out = [];
+    const walk = (node, parentId = null, depth = 0) => {
+      if (!node?.frame) return;
+      out.push({
+        id: node.frame.id,
+        parentId,
+        depth,
+        url: node.frame.url || '',
+        name: node.frame.name || '',
+        securityOrigin: node.frame.securityOrigin || '',
+        mimeType: node.frame.mimeType || '',
+      });
+      for (const child of node.childFrames || []) walk(child, node.frame.id, depth + 1);
+    };
+    walk(frameTree);
+    return out;
+  }
+
+  async resolveFrame(ref) {
+    const frames = await this.frames();
+    if (!ref) return frames[0];
+    const exact = frames.find((f) => f.id === ref);
+    const hit = exact || frames.find((f) => (f.url || '').includes(String(ref)) || (f.name || '').includes(String(ref)));
+    if (!hit) {
+      const available = frames.map((f) => `${f.id.slice(0, 8)}:${f.name || f.url}`).join(' | ');
+      throw new Error(`frame not found: ${ref}. Available: ${available}`);
+    }
+    return hit;
+  }
+
   async evaluate(expression, opts = {}) {
     this.assertNoDialog();
-    const res = await this.cdp.send(
-      'Runtime.evaluate',
-      {
-        expression,
-        returnByValue: opts.returnByValue !== false,
-        awaitPromise: opts.awaitPromise !== false,
-        userGesture: true,
-        includeCommandLineAPI: true,
-        allowUnsafeEvalBlockedByCSP: true,
-      },
-      { timeout: opts.timeout ?? 60000 },
-    );
+    const params = {
+      expression,
+      returnByValue: opts.returnByValue !== false,
+      awaitPromise: opts.awaitPromise !== false,
+      userGesture: true,
+      includeCommandLineAPI: true,
+      allowUnsafeEvalBlockedByCSP: true,
+    };
+    if (opts.frame) {
+      const frame = await this.resolveFrame(opts.frame);
+      const { executionContextId } = await this.cdp.send('Page.createIsolatedWorld', {
+        frameId: frame.id,
+        worldName: 'dsh',
+      });
+      params.contextId = executionContextId;
+    }
+    const res = await this.cdp.send('Runtime.evaluate', params, { timeout: opts.timeout ?? 60000 });
     if (res.exceptionDetails) throw new Error(formatException(res.exceptionDetails));
     const r = res.result;
     if (!r) return undefined;
@@ -355,6 +392,57 @@ export class PageSession {
     this.url = (await this.evaluate('location.href', { awaitPromise: false }).catch(() => url)) || url;
     this.title = (await this.getTitle().catch(() => '')) || '';
     return { tab: this.id, url: this.url, title: this.title, frameId: res.frameId };
+  }
+
+  async history() {
+    const h = await this.cdp.send('Page.getNavigationHistory');
+    return {
+      currentIndex: h.currentIndex,
+      entries: (h.entries || []).map((e, index) => ({
+        index,
+        id: e.id,
+        url: e.url,
+        title: e.title,
+        transitionType: e.transitionType,
+      })),
+    };
+  }
+
+  async goHistory(delta, { wait = true, timeout = 30000 } = {}) {
+    const h = await this.cdp.send('Page.getNavigationHistory');
+    const index = h.currentIndex + delta;
+    const entry = (h.entries || [])[index];
+    if (!entry) throw new Error(delta < 0 ? 'no previous history entry' : 'no next history entry');
+    await this.cdp.send('Page.navigateToHistoryEntry', { entryId: entry.id });
+    if (wait) {
+      await sleep(100);
+      await this.waitForLoad(timeout);
+    }
+    await sleep(50);
+    this.url = (await this.evaluate('location.href', { awaitPromise: false }).catch(() => entry.url)) || entry.url;
+    this.title = (await this.getTitle().catch(() => entry.title)) || entry.title || '';
+    return { tab: this.id, url: this.url, title: this.title, index, entries: h.entries.length };
+  }
+
+  async back(opts) {
+    return this.goHistory(-1, opts);
+  }
+
+  async forward(opts) {
+    return this.goHistory(1, opts);
+  }
+
+  async reload({ ignoreCache = false, wait = true, timeout = 30000 } = {}) {
+    this.assertNoDialog();
+    await this.cdp.send('Page.reload', { ignoreCache });
+    if (wait) {
+      await sleep(100);
+      await this.waitForLoad(timeout);
+    }
+    await sleep(50);
+    this.url = (await this.evaluate('location.href', { awaitPromise: false }).catch(() => this.url)) || this.url;
+    this.title = (await this.getTitle().catch(() => this.title)) || this.title || '';
+    return { tab: this.id, url: this.url, title: this.title, reloaded: true, ignoreCache };
   }
 
   async elementInfo(selector, { scroll = true } = {}) {
@@ -526,7 +614,7 @@ export class PageSession {
     return { ok: true, tab: this.id, x, y, deltaX, deltaY };
   }
 
-  async waitFor({ selector, fn, timeout = 15000, interval = 150 } = {}) {
+  async waitFor({ selector, fn, timeout = 15000, interval = 150, frame } = {}) {
     const deadline = Date.now() + timeout;
     let lastError = null;
     while (Date.now() < deadline) {
@@ -535,13 +623,14 @@ export class PageSession {
           const ok = await this.evaluate(`Boolean(${selectorExpression(selector)})`, {
             awaitPromise: false,
             timeout: 5000,
+            frame,
           });
           if (ok) return { ok: true, tab: this.id, selector, elapsed: timeout - (deadline - Date.now()) };
         } else if (fn) {
           const trimmed = fn.trim();
           const callable = trimmed.includes('=>') || trimmed.startsWith('function') || trimmed.startsWith('async');
           const expr = callable ? `Boolean((${trimmed})())` : `Boolean(${trimmed})`;
-          const ok = await this.evaluate(expr, { awaitPromise: true, timeout: 5000 });
+          const ok = await this.evaluate(expr, { awaitPromise: true, timeout: 5000, frame });
           if (ok) return { ok: true, tab: this.id, fn, elapsed: timeout - (deadline - Date.now()) };
         } else {
           throw new Error('wait needs a selector or fn');
@@ -676,20 +765,20 @@ export class PageSession {
     };
   }
 
-  async getHtml({ selector, outer = true } = {}) {
+  async getHtml({ selector, outer = true, frame } = {}) {
     const expr = selector
       ? `(() => { const el = ${selectorExpression(selector)}; return el ? (${outer ? 'el.outerHTML' : 'el.innerHTML'}) : null; })()`
       : 'document.documentElement.outerHTML';
-    const html = await this.evaluate(expr, { awaitPromise: false });
+    const html = await this.evaluate(expr, { awaitPromise: false, frame });
     if (html == null) throw new Error(`element not found: ${selector}`);
     return { ok: true, tab: this.id, html: String(html).slice(0, 500000), length: String(html).length };
   }
 
-  async getText({ selector } = {}) {
+  async getText({ selector, frame } = {}) {
     const expr = selector
       ? `(() => { const el = ${selectorExpression(selector)}; return el ? (el.innerText || el.textContent || '') : null; })()`
       : `(document.body ? document.body.innerText : '')`;
-    const text = await this.evaluate(expr, { awaitPromise: false });
+    const text = await this.evaluate(expr, { awaitPromise: false, frame });
     if (text == null) throw new Error(`element not found: ${selector}`);
     return { ok: true, tab: this.id, text: String(text).slice(0, 300000), length: String(text).length };
   }
