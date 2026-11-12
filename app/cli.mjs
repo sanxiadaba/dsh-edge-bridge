@@ -356,6 +356,7 @@ LIFECYCLE
 
 LIVE — your daily Edge profile, full CDP (no extension)
   live ensure                    Ensure daily Edge is running with CDP; restart if needed
+  live restart                   Restart only the daily Edge profile
   live status                    Show daily Edge CDP status and tabs
   live tabs                      List tabs in your daily Edge
   live eval "<js>"               Any page command works with live mode
@@ -417,8 +418,10 @@ async function main() {
   if (cmd === 'live') {
     const sub = (pos.shift() || '').toLowerCase();
     if (!sub) throw new Error('live needs a subcommand: ensure, status, tabs, eval, click, ...');
-    if (sub === 'install' || sub === 'ensure' || sub === 'auto-install' || sub === 'restart') {
+    if (sub === 'install' || sub === 'ensure' || sub === 'auto-install') {
       cmd = 'live-ensure';
+    } else if (sub === 'restart') {
+      cmd = 'live-restart';
     } else if (sub === 'status') {
       cmd = 'live-status';
     } else if (sub === 'wait') {
@@ -537,6 +540,17 @@ async function main() {
       const tabs = await call('/tabs', { live: true }, flags);
       emit(flags, { ...data, tabs: tabs.tabs }, (d) => {
         process.stdout.write(`daily Edge: connected  profile=${d.profile}  cdp=127.0.0.1:${d.cdpPort}\n`);
+        printTabs(d.tabs);
+      });
+      return;
+    }
+
+    case 'live-restart': {
+      process.stdout.write('restarting the daily Edge profile...\n');
+      const data = await call('/live/restart', {}, flags);
+      const tabs = await call('/tabs', { live: true }, flags);
+      emit(flags, { ...data, tabs: tabs.tabs }, (d) => {
+        process.stdout.write(`daily Edge: restarted  profile=${d.profile}  cdp=127.0.0.1:${d.cdpPort}\n`);
         printTabs(d.tabs);
       });
       return;
@@ -947,7 +961,7 @@ async function main() {
     }
 
     case 'version': {
-      process.stdout.write('dshedge 1.1.0\n');
+      process.stdout.write('dshedge 1.1.1\n');
       return;
     }
 
@@ -962,6 +976,7 @@ main().catch((err) => {
   process.stderr.write(`error: ${err.message}\n`);
   process.exitCode = 1;
 });
+
 
 
 

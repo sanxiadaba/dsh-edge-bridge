@@ -137,6 +137,7 @@ automation profile. The CLI adds this automatically for `dshedge live ...`.
 | Endpoint | Body (important fields) |
 | --- | --- |
 | `POST /live/ensure` | `{}` — start/attach daily Edge |
+| `POST /live/restart` | `{}` — restart only the daily Edge profile |
 | `POST /live/status` | `{}` — daily Edge status/tabs (read-only) |
 | `POST /ensure` | `{headless?, url?}` |
 | `POST /tabs` | `{}` or `{live:true}` |

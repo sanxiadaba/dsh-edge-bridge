@@ -52,6 +52,7 @@ node "$env:USERPROFILE\.dsh\browser\app\cli.mjs" status
 
 ```powershell
 dshedge live ensure          # start/attach the persistent daily Edge
+dshedge live restart         # if the daily browser is stuck
 dshedge live tabs
 dshedge live open https://example.com
 dshedge live snapshot

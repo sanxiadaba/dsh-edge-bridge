@@ -64,6 +64,7 @@ binds extension and sign-in settings to that path. No junction and no
 
 ```powershell
 dshedge live ensure            # ensure daily Edge is running with CDP
+dshedge live restart           # only if daily Edge is stuck
 dshedge live status            # connected? which tabs?
 dshedge live tabs
 dshedge live eval "document.title" --tab "example.com"

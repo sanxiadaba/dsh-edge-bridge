@@ -32,7 +32,7 @@ const LIVE_CDP_PORT = Number(process.env.DSH_EDGE_LIVE_CDP_PORT || 9449);
 const BRIDGE_PORT = Number(process.env.DSH_EDGE_BRIDGE_PORT || 9333);
 const CDP_PORT = Number(process.env.DSH_EDGE_CDP_PORT || 9334);
 const CDP_ORIGIN = `http://127.0.0.1:${CDP_PORT}`;
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const stateToken = crypto.randomBytes(24).toString('hex');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -850,6 +850,18 @@ const routes = {
     return { ok: true, connected: true, profile: DAILY_PROFILE, cdpPort: LIVE_CDP_PORT, tabs };
   },
 
+  '/live/restart': async () => {
+    killProcessesUsingProfile(DAILY_PROFILE);
+    await sleep(1500);
+    for (const page of liveBrowser.pages.values()) page.dispose();
+    liveBrowser.pages.clear();
+    liveBrowser.activeId = null;
+    liveBrowser.browserCdp = null;
+    await liveBrowser.ensure();
+    const tabs = await liveBrowser.list();
+    return { ok: true, connected: true, restarted: true, profile: DAILY_PROFILE, cdpPort: LIVE_CDP_PORT, tabs };
+  },
+
   '/tabs': async (body) => ({
     ok: true,
     tabs: body.live ? await liveBrowser.list() : await browser.list(),
@@ -1068,7 +1080,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
 
   if (url.pathname === '/ext-update.xml') {
-    let version = '1.1.0';
+    let version = '1.1.1';
     try {
       version = JSON.parse(fs.readFileSync(path.join(EXT_DIR, 'manifest.json'), 'utf8')).version || version;
     } catch {
@@ -1243,5 +1255,6 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     setTimeout(() => process.exit(0), 1000);
   });
 }
+
 
 
