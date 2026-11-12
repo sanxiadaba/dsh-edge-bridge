@@ -164,7 +164,7 @@ automation profile. The CLI adds this automatically for `dshedge live ...`.
 | `POST /console` | `{tab?, clear?, level?, filter?}` |
 | `POST /network` | `{tab?, clear?, filter?, failedOnly?}` |
 | `POST /network/body` | `{tab?, requestId}` |
-| `POST /cookies` | `{tab?, action:"get|set|clear", cookie?, urls?}` |
+| `POST /cookies` | `{tab?, action:"get|set|clear", cookie?, urls?, force?}` |
 | `POST /storage` | `{tab?, area?, action:"get|set|remove|clear", key?, value?}` |
 | `POST /upload` | `{tab?, selector, files:[]}` |
 | `POST /pdf` | `{tab?, file?, landscape?}` |
@@ -172,7 +172,7 @@ automation profile. The CLI adds this automatically for `dshedge live ...`.
 | `POST /dialog/policy` | `{tab?, policy}` |
 | `POST /emulate` | `{tab?, offline?, latency?, downloadKbps?, uploadKbps?, width?, height?, mobile?, userAgent?, reset?}` |
 | `POST /devtools` | `{tab?}` |
-| `POST /downloads` | `{}` |
+| `POST /downloads` | `{}` or `{live:true}` — live is `managed:false` and leaves daily downloads alone |
 | `POST /cdp` | `{tab?: "browser"|id, method, params, sessionId?}` |
 | `POST /shutdown` | `{closeEdge?}` |
 

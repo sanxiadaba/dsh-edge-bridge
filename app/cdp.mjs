@@ -47,12 +47,29 @@ export class Cdp extends EventEmitter {
     ws.addEventListener('error', () => {});
 
     await new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.connected = false;
+        this.closed = true;
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        if (this.ws === ws) this.ws = null;
+        reject(err);
+      };
       const timer = setTimeout(() => {
-        reject(new CdpError(`${this.label}: connect timeout (${this.wsUrl})`, 'CONNECT_TIMEOUT'));
+        fail(new CdpError(`${this.label}: connect timeout (${this.wsUrl})`, 'CONNECT_TIMEOUT'));
       }, this.connectTimeout);
       ws.addEventListener(
         'open',
         () => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           resolve();
         },
@@ -61,8 +78,7 @@ export class Cdp extends EventEmitter {
       ws.addEventListener(
         'error',
         () => {
-          clearTimeout(timer);
-          reject(new CdpError(`${this.label}: cannot connect (${this.wsUrl})`, 'CONNECT_FAILED'));
+          fail(new CdpError(`${this.label}: cannot connect (${this.wsUrl})`, 'CONNECT_FAILED'));
         },
         { once: true },
       );

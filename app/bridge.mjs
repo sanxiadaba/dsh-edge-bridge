@@ -32,7 +32,7 @@ const LIVE_CDP_PORT = Number(process.env.DSH_EDGE_LIVE_CDP_PORT || 9449);
 const BRIDGE_PORT = Number(process.env.DSH_EDGE_BRIDGE_PORT || 9333);
 const CDP_PORT = Number(process.env.DSH_EDGE_CDP_PORT || 9334);
 const CDP_ORIGIN = `http://127.0.0.1:${CDP_PORT}`;
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const stateToken = crypto.randomBytes(24).toString('hex');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -199,7 +199,6 @@ async function ensureEdge({
     '--no-default-browser-check',
     '--noerrdialogs',
     '--disable-session-crashed-bubble',
-    '--remote-allow-origins=*',
     ...(profileDir === DAILY_PROFILE ? [] : ['--disable-blink-features=AutomationControlled']),
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
@@ -264,11 +263,21 @@ class Browser {
     this.downloads = [];
     this.edgeInfo = null;
     this.headless = false;
+    this.ensurePromise = null;
+    this.attachPromises = new Map();
   }
 
   async ensure({ headless } = {}) {
     if (headless !== undefined) this.headless = Boolean(headless);
     if (this.browserCdp?.connected) return this.edgeInfo;
+    if (this.ensurePromise) return this.ensurePromise;
+    this.ensurePromise = this.#ensureOnce().finally(() => {
+      this.ensurePromise = null;
+    });
+    return this.ensurePromise;
+  }
+
+  async #ensureOnce() {
     const version = await ensureEdge({
       headless: this.headless,
       profileDir: this.profileDir,
@@ -279,21 +288,30 @@ class Browser {
     });
     this.edgeInfo = version;
     const cdp = new Cdp(version.webSocketDebuggerUrl, { label: 'browser', timeout: 30000 });
-    await cdp.connect();
-    this.browserCdp = cdp;
-    cdp.on('*', (method, params) => this.#onBrowserEvent(method, params));
-    cdp.on('close', () => {
+    try {
+      await cdp.connect();
+      this.browserCdp = cdp;
+      cdp.on('*', (method, params) => this.#onBrowserEvent(method, params));
+      cdp.on('close', () => {
+        if (this.browserCdp === cdp) this.browserCdp = null;
+      });
+      await cdp.send('Target.setDiscoverTargets', { discover: true }).catch(() => {});
+      // Never redirect the user's daily downloads into the bridge's private folder.
+      if (this.profileDir === PROFILE_DIR) {
+        await cdp
+          .send('Browser.setDownloadBehavior', {
+            behavior: 'allow',
+            downloadPath: DOWNLOADS_DIR,
+            eventsEnabled: true,
+          })
+          .catch(() => {});
+      }
+      return this.edgeInfo;
+    } catch (err) {
+      cdp.close();
       if (this.browserCdp === cdp) this.browserCdp = null;
-    });
-    await cdp.send('Target.setDiscoverTargets', { discover: true }).catch(() => {});
-    await cdp
-      .send('Browser.setDownloadBehavior', {
-        behavior: 'allow',
-        downloadPath: DOWNLOADS_DIR,
-        eventsEnabled: true,
-      })
-      .catch(() => {});
-    return this.edgeInfo;
+      throw err;
+    }
   }
 
   #onBrowserEvent(method, params) {
@@ -323,8 +341,8 @@ class Browser {
     }
   }
 
-  async listTargets() {
-    await this.ensure();
+  async listTargets({ ensure = true } = {}) {
+    if (ensure) await this.ensure();
     try {
       return await fetchJson(`${this.cdpOrigin}/json/list`, 5000);
     } catch (err) {
@@ -332,8 +350,8 @@ class Browser {
     }
   }
 
-  async list() {
-    const targets = (await this.listTargets()).filter((t) => t.type === 'page');
+  async list({ ensure = true } = {}) {
+    const targets = (await this.listTargets({ ensure })).filter((t) => t.type === 'page');
     return targets.map((t, index) => ({
       index,
       id: t.id,
@@ -347,13 +365,21 @@ class Browser {
   async attach(targetId) {
     const existing = this.pages.get(targetId);
     if (existing?.connected) return existing;
+    if (this.attachPromises.has(targetId)) return this.attachPromises.get(targetId);
+    const promise = this.#attachOnce(targetId).finally(() => {
+      this.attachPromises.delete(targetId);
+    });
+    this.attachPromises.set(targetId, promise);
+    return promise;
+  }
+
+  async #attachOnce(targetId) {
     const targets = await this.listTargets();
     const target = targets.find((t) => t.id === targetId);
     if (!target) throw new Error(`tab not found: ${targetId}`);
     if (!target.webSocketDebuggerUrl) throw new Error(`tab has no debugger URL: ${targetId} (${target.url})`);
 
     const cdp = new Cdp(target.webSocketDebuggerUrl, { label: `tab:${targetId}`, timeout: 30000 });
-    await cdp.connect();
     const page = new PageSession({ target, cdp, log });
     page.live = this.label === 'live';
     page.defaultScreenshotPath = () =>
@@ -362,13 +388,20 @@ class Browser {
       page.connected = false;
       if (this.pages.get(targetId) === page) this.pages.delete(targetId);
     });
-    await page.enable();
+    try {
+      await cdp.connect();
+      await page.enable();
+    } catch (err) {
+      cdp.close();
+      throw err;
+    }
     this.pages.set(targetId, page);
     return page;
   }
 
   async resolve(ref) {
     const targets = (await this.listTargets()).filter((t) => t.type === 'page');
+    if (this.activeId && !targets.some((t) => t.id === this.activeId)) this.activeId = null;
     if (!targets.length) {
       const id = await this.newTab('about:blank', { active: true });
       return this.attach(id);
@@ -420,17 +453,32 @@ class Browser {
     await this.ensure();
     const targets = (await this.listTargets()).filter((t) => t.type === 'page');
     let id;
-    if (ref === undefined || ref === null || ref === 'active') id = this.activeId || targets[0]?.id;
-    else if (/^\d+$/.test(String(ref))) id = targets[Number(ref)]?.id;
+    if (ref === undefined || ref === null || ref === 'active') {
+      if (!this.activeId) {
+        throw new Error('no active tab is known; pass an explicit tab id, url substring or index');
+      }
+      id = this.activeId;
+    } else if (/^\d+$/.test(String(ref))) id = targets[Number(ref)]?.id;
     else if (/^[0-9a-f]{32}$/i.test(String(ref))) id = targets.find((t) => t.id.toLowerCase() === String(ref).toLowerCase())?.id;
     else id = targets.find((t) => (t.url || '').includes(String(ref)) || (t.title || '').includes(String(ref)))?.id;
     if (!id) throw new Error(`tab not found: ${ref}`);
     const page = this.pages.get(id);
     if (page) page.dispose();
     this.pages.delete(id);
-    await this.browserCdp.send('Target.closeTarget', { targetId: id });
-    if (this.activeId === id) this.activeId = null;
+    try {
+      await this.browserCdp.send('Target.closeTarget', { targetId: id });
+    } finally {
+      if (this.activeId === id) this.activeId = null;
+    }
     return { ok: true, closed: id };
+  }
+
+  async detach(ref) {
+    const page = await this.resolve(ref);
+    page.dispose();
+    this.pages.delete(page.id);
+    if (this.activeId === page.id) this.activeId = null;
+    return { ok: true, tab: page.id };
   }
 
   async navigate(ref, url, opts) {
@@ -801,10 +849,11 @@ async function resolvePage(body) {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
+    req.setEncoding('utf8');
     let body = '';
     let size = 0;
     req.on('data', (chunk) => {
-      size += chunk.length;
+      size += Buffer.byteLength(chunk);
       if (size > 64 * 1024 * 1024) {
         reject(new Error('request body too large'));
         req.destroy();
@@ -837,24 +886,25 @@ function sendJson(res, status, payload) {
 const routes = {
   '/ensure': async (body) => {
     const version = await browser.ensure({ headless: body.headless });
+    if (body.url) {
+      const page = await browser.resolve();
+      await page.navigate(body.url, { wait: body.wait !== false, timeout: Number(body.timeout || 45000) });
+    }
     return {
       ok: true,
       browser: version.Browser,
       userAgent: version['User-Agent'],
-      profile: DAILY_PROFILE,
+      profile: PROFILE_DIR,
       cdpPort: CDP_PORT,
       tabs: await browser.list(),
     };
   },
 
   '/live/status': async () => {
-    if (!liveBrowser.browserCdp?.connected) {
-      const version = await cdpVersion(LIVE_CDP_PORT).catch(() => null);
-      if (version) await liveBrowser.ensure().catch(() => null);
-    }
-    const connected = Boolean(liveBrowser.browserCdp?.connected);
+    const version = await cdpVersion(LIVE_CDP_PORT).catch(() => null);
+    const connected = Boolean(version || liveBrowser.browserCdp?.connected);
     let tabs = [];
-    if (connected) tabs = await liveBrowser.list().catch(() => []);
+    if (connected) tabs = await liveBrowser.list({ ensure: false }).catch(() => []);
     return {
       ok: true,
       connected,
@@ -865,7 +915,7 @@ const routes = {
             {
               browser: 'real',
               short: 'real',
-              version: liveBrowser.edgeInfo?.Browser || '',
+              version: version?.Browser || liveBrowser.edgeInfo?.Browser || '',
               lastSeen: Date.now(),
               connected: true,
               tabs: tabs.length,
@@ -890,6 +940,11 @@ const routes = {
     for (const page of liveBrowser.pages.values()) page.dispose();
     liveBrowser.pages.clear();
     liveBrowser.activeId = null;
+    try {
+      liveBrowser.browserCdp?.close();
+    } catch {
+      /* ignore */
+    }
     liveBrowser.browserCdp = null;
     await liveBrowser.ensure();
     const tabs = await liveBrowser.list();
@@ -898,7 +953,7 @@ const routes = {
 
   '/tabs': async (body) => ({
     ok: true,
-    tabs: body.live ? await liveBrowser.list() : await browser.list(),
+    tabs: body.live ? await liveBrowser.list({ ensure: false }) : await browser.list(),
   }),
 
   '/tabs/new': async (body) => {
@@ -927,8 +982,8 @@ const routes = {
   },
 
   '/tabs/detach': async (body) => {
-    if (!body.live) throw new Error('tabs/detach is only meaningful in live mode');
-    throw new Error('live CDP mode has no per-tab debugger attachment; just stop using the tab');
+    const target = body.live ? liveBrowser : browser;
+    return await target.detach(body.tab);
   },
 
   '/navigate': async (body) => {
@@ -1079,7 +1134,12 @@ const routes = {
       if (cookie.url === undefined && cookie.domain === undefined) cookie.url = page.url;
       return await page.setCookie(cookie);
     }
-    if (action === 'clear') return await page.clearCookies();
+    if (action === 'clear') {
+      if (body.live && body.force !== true) {
+        throw new Error('refusing to clear all daily-profile cookies without force:true');
+      }
+      return await page.clearCookies();
+    }
     throw new Error(`unknown cookies action: ${action}`);
   },
 
@@ -1122,8 +1182,12 @@ const routes = {
 
   '/downloads': async (body) => {
     const target = body.live ? liveBrowser : browser;
-    if (body.live && !target.browserCdp?.connected) await target.ensure();
-    return { ok: true, directory: DOWNLOADS_DIR, downloads: target.downloads };
+    return {
+      ok: true,
+      directory: body.live ? null : DOWNLOADS_DIR,
+      managed: !body.live,
+      downloads: target.downloads,
+    };
   },
 
   '/cdp': async (body) => {
@@ -1160,7 +1224,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
 
   if (url.pathname === '/ext-update.xml') {
-    let version = '1.2.0';
+    let version = '1.3.0';
     try {
       version = JSON.parse(fs.readFileSync(path.join(EXT_DIR, 'manifest.json'), 'utf8')).version || version;
     } catch {
@@ -1275,6 +1339,12 @@ const server = http.createServer(async (req, res) => {
       setTimeout(async () => {
         try {
           if (closeEdge) await browser.closeBrowser();
+        } catch {
+          /* ignore */
+        }
+        try {
+          const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+          if (s.pid === process.pid) fs.unlinkSync(STATE_FILE);
         } catch {
           /* ignore */
         }

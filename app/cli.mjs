@@ -226,6 +226,22 @@ function killAutomationEdge() {
   }
 }
 
+function pidIsBridge(pid) {
+  const script =
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; ` +
+    `if ($p -and $p.CommandLine -and $p.CommandLine.ToLower().Contains('bridge.mjs')) { exit 0 } else { exit 1 }`;
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: 10000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function edgeExecutable() {
   const candidates = [
     process.env.DSH_EDGE_PATH,
@@ -374,7 +390,8 @@ PAGE
   back | forward                 Go back/forward in tab history
   reload [--hard]                Reload the active tab (--hard bypasses cache)
   history                        Show the active tab's navigation history
-  window [--maximize|--minimize] [--width px --height px]
+  window [--maximize|--minimize|--normal|--fullscreen]
+         [--width px --height px --left px --top px]
                                  Get or set the browser window bounds
   frames                         List frames (main document + iframes)
   eval <js> | --file <path>      Evaluate JavaScript, print the value
@@ -382,7 +399,8 @@ PAGE
   text [selector]                Visible text of the page or element
   html [selector]                HTML of the page or element
   snapshot                       Accessibility tree of the page
-  shot [path] [--full]           Screenshot (default: ~/.dsh/browser/screenshots)
+  shot [path] [--full] [--format png|jpeg] [--quality n] [--selector sel]
+                                 Screenshot (default: ~/.dsh/browser/screenshots)
   pdf [path]                     Save the page as PDF
   devtools [tab] [--open]        URL of the DevTools frontend for a tab
 
@@ -400,7 +418,8 @@ DEBUG
   net [--clear] [--filter]       Captured network requests
   body <requestId>               Response body of a captured request
   cdp <Method> [json]            Raw CDP command (--tab browser for browser domain)
-  cookies [--clear|--set name=value] [--domain d] [--url u]
+  cookies [--clear|--set name=value] [--domain d] [--url u] [--force]
+                                 --force is required to clear daily cookies
   storage [--area session] [--get k|--set k=v|--remove k|--clear]
   dialog [--accept|--dismiss]    Handle a pending JavaScript dialog
   dialog-policy <policy>         accept | dismiss | manual (default: dismiss)
@@ -481,6 +500,10 @@ async function main() {
         process.stdout.write(data.closeEdge ? 'bridge stopped, Edge closed\n' : 'bridge stopped\n');
       } catch {
         if (closeEdge) killAutomationEdge();
+        if (!Number.isInteger(Number(state.pid)) || !pidIsBridge(state.pid)) {
+          process.stdout.write('bridge is not running (stale state)\n');
+          return;
+        }
         try {
           process.kill(state.pid);
           process.stdout.write('bridge process killed\n');
@@ -546,7 +569,7 @@ async function main() {
 
     case 'live-auto-install':
     case 'live-ensure': {
-      process.stdout.write('ensuring the daily Edge profile has CDP...\n');
+      if (!flags.json) process.stdout.write('ensuring the daily Edge profile has CDP...\n');
       const data = await call('/live/ensure', {}, flags);
       const tabs = await call('/tabs', { live: true }, flags);
       emit(flags, { ...data, tabs: tabs.tabs }, (d) => {
@@ -557,7 +580,7 @@ async function main() {
     }
 
     case 'live-restart': {
-      process.stdout.write('restarting the daily Edge profile...\n');
+      if (!flags.json) process.stdout.write('restarting the daily Edge profile...\n');
       const data = await call('/live/restart', {}, flags);
       const tabs = await call('/tabs', { live: true }, flags);
       emit(flags, { ...data, tabs: tabs.tabs }, (d) => {
@@ -652,6 +675,9 @@ async function main() {
       else if (flags.minimize) action = 'minimize';
       else if (flags.fullscreen) action = 'fullscreen';
       else if (flags.normal || flags.width || flags.height || flags.left || flags.top) action = 'normal';
+      if (['maximize', 'minimize', 'fullscreen'].includes(action) && (flags.width || flags.height || flags.left || flags.top)) {
+        throw new Error('window state flags (--maximize/--minimize/--fullscreen) cannot be combined with bounds');
+      }
       const body = { tab: flags.tab, action };
       for (const key of ['width', 'height', 'left', 'top']) {
         if (flags[key] !== undefined) body[key] = Number(flags[key]);
@@ -702,7 +728,7 @@ async function main() {
       const file = pos[0] || flags.path;
       const data = await call('/screenshot', {
         tab: flags.tab,
-        file,
+        file: file ? path.resolve(file) : undefined,
         fullPage: Boolean(flags.full),
         selector: flags.selector,
         format: flags.format || 'png',
@@ -784,13 +810,14 @@ async function main() {
       const selector = pos[0] || flags.selector;
       const fn = flags.fn;
       if (!selector && !fn) throw new Error('wait needs a selector or --fn');
+      const waitTimeout = Number(flags.timeout || 20000);
       const data = await call('/wait', {
         tab: flags.tab,
         selector,
         fn,
         frame: flags.frame,
-        timeout: Number(flags.timeout || 20000),
-      }, flags);
+        timeout: waitTimeout,
+      }, { ...flags, timeout: waitTimeout + 5000 });
       emit(flags, data, () => process.stdout.write('ready\n'));
       return;
     }
@@ -870,7 +897,7 @@ async function main() {
     }
 
     case 'cookies': {
-      const body = { tab: flags.tab, action: 'get', urls: flags.url ? [flags.url] : undefined };
+      const body = { tab: flags.tab, action: 'get', urls: flags.url ? [flags.url] : undefined, force: Boolean(flags.force) };
       if (flags.clear) body.action = 'clear';
       else if (flags.set) {
         const raw = String(flags.set);
@@ -935,13 +962,18 @@ async function main() {
       if (!pos[0]) throw new Error('upload needs a selector');
       const files = flags.file ? (Array.isArray(flags.file) ? flags.file : [flags.file]) : pos.slice(1);
       if (!files.length) throw new Error('upload needs at least one file');
-      const data = await call('/upload', { tab: flags.tab, selector: pos[0], files }, flags);
+      const data = await call('/upload', { tab: flags.tab, selector: pos[0], files: files.map((f) => path.resolve(f)) }, flags);
       emit(flags, data, (d) => process.stdout.write(`uploaded ${d.files.length} file(s)\n`));
       return;
     }
 
     case 'pdf': {
-      const data = await call('/pdf', { tab: flags.tab, file: pos[0] || flags.path, landscape: Boolean(flags.landscape) }, flags);
+      const file = pos[0] || flags.path;
+      const data = await call('/pdf', {
+        tab: flags.tab,
+        file: file ? path.resolve(file) : undefined,
+        landscape: Boolean(flags.landscape),
+      }, flags);
       emit(flags, data, (d) => process.stdout.write(`${d.path}\n${d.bytes} bytes\n`));
       return;
     }
@@ -1014,7 +1046,8 @@ async function main() {
         for (const item of d.downloads) {
           process.stdout.write(`${item.state.padEnd(10)} ${clip(item.suggestedFilename, 60)}  ${clip(item.url, 100)}\n`);
         }
-        process.stdout.write(`(${d.downloads.length}) in ${d.directory}\n`);
+        const where = d.managed ? `in ${d.directory}` : '(daily profile, no private download directory)';
+        process.stdout.write(`(${d.downloads.length}) ${where}\n`);
       });
       return;
     }
@@ -1029,7 +1062,7 @@ async function main() {
     }
 
     case 'version': {
-      process.stdout.write('dshedge 1.2.0\n');
+      process.stdout.write('dshedge 1.3.0\n');
       return;
     }
 

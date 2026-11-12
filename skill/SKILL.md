@@ -170,6 +170,8 @@ reproduction to keep signal high.
 - Confirm before irreversible actions: payments, posting, sending messages, deleting
   data, changing account settings.
 - Do not read cookies, stored passwords, or localStorage unless the task requires it.
+- `cookies --clear` against the live profile is refused unless `--force` is passed;
+  clearing cookies logs the user out of every site. Use it only on explicit request.
 - The bridge binds to `127.0.0.1` and requires a per-run token from
   `~/.dsh/browser/state.json`; live CDP on port 9449 has no token. Never expose either
   port; any local process that can reach 9449 controls the daily Edge.

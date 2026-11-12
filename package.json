@@ -1,6 +1,6 @@
 {
   "name": "dsh-edge-bridge",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Zero-dependency CDP bridge for controlling Microsoft Edge from DSH or any local agent",
   "type": "module",
   "license": "MIT",
@@ -15,6 +15,7 @@
     "skill",
     "scripts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "repository": {
@@ -30,6 +31,7 @@
     "windows"
   ],
   "scripts": {
-    "check": "node --check app/bridge.mjs && node --check app/page.mjs && node --check app/cdp.mjs && node --check app/cli.mjs"
+    "check": "node --check app/bridge.mjs && node --check app/page.mjs && node --check app/cdp.mjs && node --check app/cli.mjs",
+    "test": "node --test --test-concurrency=1 test/integration.test.mjs"
   }
 }

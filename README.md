@@ -43,7 +43,7 @@ The installer copies the runtime to `%USERPROFILE%\.dsh\browser\app`, installs t
 `edge-browser` skill to `%USERPROFILE%\.dsh\skills\edge-browser`, and creates
 `dshedge.cmd` / `dshedge.ps1` in `%APPDATA%\npm`.
 
-For a manual install, copy `app\` and `skill\edge-browser\` to those locations and put
+For a manual install, copy `app\` and `skill\` to those locations and put
 this on PATH:
 
 ```powershell
@@ -142,6 +142,23 @@ open or close.
 - `chrome-extension://` and `edge://` targets may be restricted by Edge regardless of
   this tool.
 - This is a local developer tool, not a hardened multi-user service.
+
+## Tests
+
+The integration suite launches its own Edge profile on ephemeral ports and serves
+local fixture pages, so it never touches the daily browser or its tabs.
+
+```powershell
+npm test
+# or, for CI / a desktop-free session (window and live tests are skipped):
+$env:DSH_TEST_HEADLESS='1'; npm test
+```
+
+It covers lifecycle, tab churn, navigation/history, slow-document waits,
+beforeunload, DOM/input/shadow DOM, forms, Unicode, screenshots/PDF, JPEG and
+emulation-state restoration, tall-page caps, console/network bodies, cookies/storage,
+dialogs, uploads, downloads, frames, window bounds, raw browser CDP, bridge restart,
+Edge crash recovery, live-profile isolation and bridge/tab soak loops.
 
 ## Development
 

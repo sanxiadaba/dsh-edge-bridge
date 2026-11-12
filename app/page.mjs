@@ -145,6 +145,8 @@ export class PageSession {
     this.pendingDialog = null;
     this.dialogPolicy = 'dismiss';
     this.downloads = [];
+    this.deviceMetrics = null;
+    this.frameContexts = new Map();
     this.connected = true;
     this.enabled = false;
 
@@ -252,9 +254,16 @@ export class PageSession {
       }
       case 'Page.frameNavigated': {
         const frame = params.frame || {};
+        if (frame.id) this.frameContexts.delete(frame.id);
         if (!frame.parentId) {
           this.url = frame.url || this.url;
           if (frame.name) this.title = frame.name;
+        }
+        break;
+      }
+      case 'Runtime.executionContextDestroyed': {
+        for (const [frameId, contextId] of this.frameContexts) {
+          if (contextId === params.executionContextId) this.frameContexts.delete(frameId);
         }
         break;
       }
@@ -269,10 +278,12 @@ export class PageSession {
         this.dialogs.push(dialog);
         this.pendingDialog = dialog;
         const policy = this.dialogPolicy;
-        if (policy === 'accept' || policy === 'dismiss') {
+        // A beforeunload dialog must be accepted or every navigation is cancelled.
+        const autoAccept = dialog.type === 'beforeunload' ? true : policy === 'accept';
+        if (dialog.type === 'beforeunload' || policy === 'accept' || policy === 'dismiss') {
           this.cdp
             .send('Page.handleJavaScriptDialog', {
-              accept: policy === 'accept',
+              accept: autoAccept,
               promptText: dialog.defaultPrompt || '',
             })
             .catch(() => {});
@@ -342,11 +353,16 @@ export class PageSession {
     };
     if (opts.frame) {
       const frame = await this.resolveFrame(opts.frame);
-      const { executionContextId } = await this.cdp.send('Page.createIsolatedWorld', {
-        frameId: frame.id,
-        worldName: 'dsh',
-      });
-      params.contextId = executionContextId;
+      let contextId = this.frameContexts.get(frame.id);
+      if (!contextId) {
+        const world = await this.cdp.send('Page.createIsolatedWorld', {
+          frameId: frame.id,
+          worldName: 'dsh',
+        });
+        contextId = world.executionContextId;
+        this.frameContexts.set(frame.id, contextId);
+      }
+      params.contextId = contextId;
     }
     const res = await this.cdp.send('Runtime.evaluate', params, { timeout: opts.timeout ?? 60000 });
     if (res.exceptionDetails) throw new Error(formatException(res.exceptionDetails));
@@ -379,15 +395,46 @@ export class PageSession {
     throw new Error(`navigation did not reach readyState=complete in ${timeout}ms${lastError ? ` (${lastError.message})` : ''}`);
   }
 
+  async documentInfo() {
+    return this.evaluate(
+      `({ href: location.href, ready: document.readyState, origin: performance.timeOrigin })`,
+      { awaitPromise: false, timeout: 5000 },
+    );
+  }
+
+  async waitForDocumentChange(before, timeout = 30000) {
+    if (!before) return this.waitForLoad(timeout);
+    const deadline = Date.now() + timeout;
+    let last = null;
+    while (Date.now() < deadline) {
+      try {
+        const now = await this.documentInfo();
+        last = now;
+        const changed = now.origin !== before.origin || now.href !== before.href;
+        if (changed && now.ready === 'complete') {
+          await sleep(100);
+          return true;
+        }
+      } catch {
+        /* execution context can disappear while navigating */
+      }
+      await sleep(100);
+    }
+    throw new Error(
+      `navigation did not commit/build a new document in ${timeout}ms (last: ${last ? `${last.href} ${last.ready}` : 'unavailable'})`,
+    );
+  }
+
   async navigate(url, { wait = true, timeout = 30000, referrer } = {}) {
     this.assertNoDialog();
+    const before = wait ? await this.documentInfo().catch(() => null) : null;
     const res = await this.cdp.send('Page.navigate', { url, referrer });
     if (res.errorText) throw new Error(`navigation failed: ${res.errorText}`);
     if (res.isDownload) {
       this.log(`download started from ${url}`);
       return { tab: this.id, url, isDownload: true };
     }
-    if (wait) await this.waitForLoad(timeout);
+    if (wait) await this.waitForDocumentChange(before, timeout);
     await sleep(50);
     this.url = (await this.evaluate('location.href', { awaitPromise: false }).catch(() => url)) || url;
     this.title = (await this.getTitle().catch(() => '')) || '';
@@ -409,15 +456,14 @@ export class PageSession {
   }
 
   async goHistory(delta, { wait = true, timeout = 30000 } = {}) {
+    this.assertNoDialog();
     const h = await this.cdp.send('Page.getNavigationHistory');
     const index = h.currentIndex + delta;
     const entry = (h.entries || [])[index];
     if (!entry) throw new Error(delta < 0 ? 'no previous history entry' : 'no next history entry');
+    const before = wait ? await this.documentInfo().catch(() => null) : null;
     await this.cdp.send('Page.navigateToHistoryEntry', { entryId: entry.id });
-    if (wait) {
-      await sleep(100);
-      await this.waitForLoad(timeout);
-    }
+    if (wait) await this.waitForDocumentChange(before, timeout);
     await sleep(50);
     this.url = (await this.evaluate('location.href', { awaitPromise: false }).catch(() => entry.url)) || entry.url;
     this.title = (await this.getTitle().catch(() => entry.title)) || entry.title || '';
@@ -434,11 +480,9 @@ export class PageSession {
 
   async reload({ ignoreCache = false, wait = true, timeout = 30000 } = {}) {
     this.assertNoDialog();
+    const before = wait ? await this.documentInfo().catch(() => null) : null;
     await this.cdp.send('Page.reload', { ignoreCache });
-    if (wait) {
-      await sleep(100);
-      await this.waitForLoad(timeout);
-    }
+    if (wait) await this.waitForDocumentChange(before, timeout);
     await sleep(50);
     this.url = (await this.evaluate('location.href', { awaitPromise: false }).catch(() => this.url)) || this.url;
     this.title = (await this.getTitle().catch(() => this.title)) || this.title || '';
@@ -532,7 +576,7 @@ export class PageSession {
         const el = ${selectorExpression(selector)};
         if (!el) return false;
         el.focus();
-        if (el.select) el.select();
+        try { if (el.select) el.select(); } catch { /* number/date inputs reject select() */ }
         return true;
       })()`);
       if (!focused) throw new Error(`element not found: ${selector}`);
@@ -649,6 +693,7 @@ export class PageSession {
     let height;
     let warning;
     let res;
+    const previousMetrics = this.deviceMetrics;
 
     if (fullPage && !selector && !this.live) {
       const metrics = await this.cdp.send('Page.getLayoutMetrics');
@@ -675,17 +720,20 @@ export class PageSession {
           res = await this.cdp.send('Page.captureScreenshot', { format, fromSurface: true }, { timeout: 20000 });
           height = targetHeight;
         } finally {
-          // Explicitly restore the window viewport first: clear alone can leave a stale
-          // override behind when the renderer was busy.
-          await this.cdp
-            .send('Emulation.setDeviceMetricsOverride', {
-              width: vp.width,
-              height: vp.height,
-              deviceScaleFactor: 1,
-              mobile: false,
-            })
-            .catch(() => {});
-          await this.cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+          // Restore the caller's emulation override, not just the window viewport.
+          if (previousMetrics) {
+            await this.cdp.send('Emulation.setDeviceMetricsOverride', previousMetrics).catch(() => {});
+          } else {
+            await this.cdp
+              .send('Emulation.setDeviceMetricsOverride', {
+                width: vp.width,
+                height: vp.height,
+                deviceScaleFactor: 1,
+                mobile: false,
+              })
+              .catch(() => {});
+            await this.cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+          }
         }
       }
     } else {
@@ -693,7 +741,10 @@ export class PageSession {
         // Do not resize the user's real tab with emulation; capture a clipped surface.
         const metrics = await this.cdp.send('Page.getLayoutMetrics');
         const size = metrics.cssContentSize || metrics.contentSize;
-        clip = { x: 0, y: 0, width: Math.ceil(size.width), height: Math.ceil(size.height), scale: 1 };
+        const fullHeight = Math.ceil(size.height);
+        const targetHeight = Math.min(fullHeight, 16384);
+        if (targetHeight < fullHeight) warning = `page is ${fullHeight}px tall; captured the first 16384px`;
+        clip = { x: 0, y: 0, width: Math.ceil(size.width), height: targetHeight, scale: 1 };
         width = clip.width;
         height = clip.height;
       } else if (selector) {
@@ -747,7 +798,10 @@ export class PageSession {
 
     const buf = Buffer.from(res.data, 'base64');
     let outPath = file;
-    if (!outPath && this.defaultScreenshotPath) outPath = this.defaultScreenshotPath();
+    if (!outPath && this.defaultScreenshotPath) {
+      outPath = this.defaultScreenshotPath();
+      if (format !== 'png') outPath = outPath.replace(/\.png$/i, `.${format}`);
+    }
     if (!outPath) outPath = path.join(process.cwd(), `screenshot-${Date.now()}.${format}`);
     outPath = path.resolve(outPath);
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -910,6 +964,7 @@ export class PageSession {
   async emulate({ offline, latency, downloadKbps, uploadKbps, width, height, deviceScaleFactor, mobile, userAgent, reset } = {}) {
     if (reset) {
       await this.cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+      this.deviceMetrics = null;
       await this.cdp.send('Network.emulateNetworkConditions', {
         offline: false,
         latency: 0,
@@ -927,12 +982,8 @@ export class PageSession {
       });
     }
     if (width && height) {
-      await this.cdp.send('Emulation.setDeviceMetricsOverride', {
-        width,
-        height,
-        deviceScaleFactor: deviceScaleFactor ?? 1,
-        mobile: Boolean(mobile),
-      });
+      this.deviceMetrics = { width, height, deviceScaleFactor: deviceScaleFactor ?? 1, mobile: Boolean(mobile) };
+      await this.cdp.send('Emulation.setDeviceMetricsOverride', this.deviceMetrics);
     }
     if (userAgent) {
       await this.cdp.send('Emulation.setUserAgentOverride', { userAgent });
