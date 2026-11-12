@@ -947,7 +947,7 @@ async function main() {
     }
 
     case 'version': {
-      process.stdout.write('dshedge 1.0.0\n');
+      process.stdout.write('dshedge 1.1.0\n');
       return;
     }
 
@@ -962,5 +962,6 @@ main().catch((err) => {
   process.stderr.write(`error: ${err.message}\n`);
   process.exitCode = 1;
 });
+
 
 

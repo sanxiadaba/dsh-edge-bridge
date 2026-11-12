@@ -32,7 +32,7 @@ const LIVE_CDP_PORT = Number(process.env.DSH_EDGE_LIVE_CDP_PORT || 9449);
 const BRIDGE_PORT = Number(process.env.DSH_EDGE_BRIDGE_PORT || 9333);
 const CDP_PORT = Number(process.env.DSH_EDGE_CDP_PORT || 9334);
 const CDP_ORIGIN = `http://127.0.0.1:${CDP_PORT}`;
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const stateToken = crypto.randomBytes(24).toString('hex');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -134,11 +134,16 @@ async function cdpVersion(port = CDP_PORT) {
   }
 }
 
-function stopAllEdge() {  const script =
-    '$p = Get-Process msedge -ErrorAction SilentlyContinue; ' +
-    '$p | ForEach-Object { $_.CloseMainWindow() | Out-Null }; ' +
+function killProcessesUsingProfile(profileDir = PROFILE_DIR) {
+  const needle = profileDir.replace(/'/g, "''");
+  const find =
+    `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | ` +
+    `Where-Object { $_.CommandLine -and $_.CommandLine.ToLower().Contains('${needle}'.ToLower()) }`;
+  const script =
+    `${find} | ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue } | ` +
+    'ForEach-Object { $_.CloseMainWindow() | Out-Null }; ' +
     'Start-Sleep -Seconds 2; ' +
-    'Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue';
+    `${find} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
   try {
     execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
       stdio: 'ignore',
@@ -181,7 +186,7 @@ async function ensureEdge({
   if (existing) return existing;
 
   if (killOthers) {
-    stopAllEdge();
+    killProcessesUsingProfile(profileDir);
     await sleep(2500);
   }
 
@@ -359,7 +364,6 @@ class Browser {
     });
     await page.enable();
     this.pages.set(targetId, page);
-    if (!this.activeId) this.activeId = targetId;
     return page;
   }
 
@@ -370,8 +374,10 @@ class Browser {
       return this.attach(id);
     }
     let target;
-    if (ref === undefined || ref === null || ref === '' || ref === 'active') {
+    const isDefault = ref === undefined || ref === null || ref === '' || ref === 'active';
+    if (isDefault) {
       target = targets.find((t) => t.id === this.activeId) || targets[0];
+      if (!this.activeId) this.activeId = target.id;
     } else if (typeof ref === 'number' || /^\d+$/.test(String(ref))) {
       target = targets[Number(ref)];
     } else if (/^[0-9a-f]{32}$/i.test(String(ref))) {
@@ -383,7 +389,6 @@ class Browser {
       const available = targets.map((t, i) => `${i}:${t.title || t.url}`).join(' | ');
       throw new Error(`tab not found: ${ref}. Available: ${available}`);
     }
-    if (this.activeId !== target.id) this.activeId = target.id;
     return this.attach(target.id);
   }
 
@@ -430,9 +435,7 @@ class Browser {
 
   async navigate(ref, url, opts) {
     const page = await this.resolve(ref);
-    const result = await page.navigate(url, opts);
-    this.activeId = page.id;
-    return result;
+    return page.navigate(url, opts);
   }
 
   async closeBrowser() {
@@ -897,7 +900,10 @@ const routes = {
 
   '/screenshot': async (body) => {
     const page = await resolvePage(body);
-    if (body.live) await page.cdp.send('Page.bringToFront').catch(() => {});
+    if (body.live) {
+      await page.cdp.send('Page.bringToFront').catch(() => {});
+      liveBrowser.activeId = page.id;
+    }
     return await page.screenshot(body);
   },
 
@@ -1022,12 +1028,21 @@ const routes = {
     return { ok: true, tab: page.id, url: page.devtoolsUrl(body.live ? liveBrowser.cdpOrigin : browser.cdpOrigin) };
   },
 
-  '/downloads': async () => ({ ok: true, directory: DOWNLOADS_DIR, downloads: browser.downloads }),
+  '/downloads': async (body) => {
+    const target = body.live ? liveBrowser : browser;
+    if (body.live && !target.browserCdp?.connected) await target.ensure();
+    return { ok: true, directory: DOWNLOADS_DIR, downloads: target.downloads };
+  },
 
   '/cdp': async (body) => {
     if (!body.method) throw new Error('cdp needs method');
-    if (body.tab === 'browser' && !body.live) {
-      const result = await browser.browserCdp.send(body.method, body.params || {}, { timeout: body.timeout ?? 60000 });
+    if (body.tab === 'browser') {
+      const target = body.live ? liveBrowser : browser;
+      if (!target.browserCdp?.connected) await target.ensure();
+      const result = await target.browserCdp.send(body.method, body.params || {}, {
+        timeout: body.timeout ?? 60000,
+        sessionId: body.sessionId,
+      });
       return { ok: true, result };
     }
     const page = await resolvePage(body);
@@ -1053,7 +1068,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${BRIDGE_PORT}`);
 
   if (url.pathname === '/ext-update.xml') {
-    let version = '1.0.0';
+    let version = '1.1.0';
     try {
       version = JSON.parse(fs.readFileSync(path.join(EXT_DIR, 'manifest.json'), 'utf8')).version || version;
     } catch {
@@ -1228,4 +1243,5 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     setTimeout(() => process.exit(0), 1000);
   });
 }
+
 

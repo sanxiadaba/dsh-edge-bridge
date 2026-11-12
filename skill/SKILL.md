@@ -72,9 +72,10 @@ dshedge live type "#q" "hello" --clear
 dshedge live shot C:\temp\live.png
 ```
 
-- `live ensure` / any live page command may **restart Edge** when it is running
-  without CDP. The restart uses `--restore-last-session`; warn the user before running
-  it if they have unsaved form input.
+- `live ensure` / any live page command may **restart the daily Edge** when it is
+  running without CDP. It closes only Edge windows using the daily profile; other
+  Edge profiles are left alone. The restart uses `--restore-last-session`; warn the
+  user before running it if they have unsaved form input.
 - Live mode is the same CDP surface as the automation profile: tabs, DOM, input,
   console, network, screenshots, raw `cdp`.
 - `dshedge stop --all` closes only the automation Edge; the daily Edge is untouched.
@@ -151,6 +152,8 @@ overlay is decorative, otherwise close the overlay first.
 4. `dshedge live body <requestId>` for a response payload.
 5. For anything the CLI does not wrap, use raw CDP:
    `dshedge live cdp Network.setBlockedURLs '{"urls":["*.png"]}'`.
+   Browser-level domains (`Target`, `Browser`, `Storage`) use `--tab browser`, e.g.
+   `dshedge live cdp Target.getTargets --tab browser`.
 6. `dshedge live devtools --open` shows the same tab in Edge DevTools for manual inspection.
 
 Console and network buffers are in-memory per tab, capped at a few thousand entries,

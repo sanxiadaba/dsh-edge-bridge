@@ -120,14 +120,20 @@ open or close.
   that can reach it can control the daily browser. Do not expose or forward it.
 - Profiles contain cookies, sessions and potentially saved passwords. Treat them as
   private and keep this tool on a trusted machine.
-- `live ensure` may restart Edge to acquire CDP, using `--restore-last-session`.
-  Save unsaved form input before running it.
+- `live ensure` may restart the daily Edge to acquire CDP, using
+  `--restore-last-session`. It closes only windows using the daily profile; other
+  Edge profiles are left alone. Save unsaved form input before running it.
 - `stop --all` closes the automation Edge only, not the daily browser.
 
 ## Limitations
 
 - Windows only (Edge discovery and process management are Windows-specific).
 - One Edge instance per profile; the port must be free.
+- Page helpers (`eval`, `click`, `text`, ...) operate on the top frame. Use raw
+  browser-level CDP (`--tab browser`) with `Target` sessions for OOPIF, iframe
+  internals or service workers.
+- The CLI remembers tabs it activated or opened. If you switch tabs manually, use a
+  URL substring or full tab id instead of `--tab active`.
 - `chrome-extension://` and `edge://` targets may be restricted by Edge regardless of
   this tool.
 - This is a local developer tool, not a hardened multi-user service.
