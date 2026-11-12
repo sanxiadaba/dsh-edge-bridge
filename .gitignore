@@ -1,0 +1,28 @@
+# Runtime data and profiles
+edge-daily/
+edge-profile/
+state.json
+extension-token
+extension.pem
+extension.crx
+extension/
+screenshots/
+downloads/
+backups/
+logs/
+tools/
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local env
+.env
+.env.*
