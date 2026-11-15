@@ -22,8 +22,17 @@ if (Test-Path $statePath) {
 
 Remove-Item (Join-Path $npmBin 'dshedge.cmd') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $npmBin 'dshedge.ps1') -Force -ErrorAction SilentlyContinue
-Remove-Item $app -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item $skill -Recurse -Force -ErrorAction SilentlyContinue
+
+foreach ($path in @($app, $skill)) {
+  if (-not (Test-Path -LiteralPath $path)) { continue }
+  $item = Get-Item -LiteralPath $path -Force
+  if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    # Junctions and symlinks: remove the link only, never the repository.
+    cmd /c rmdir "$path" | Out-Null
+  } else {
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 
 if ($PurgeData) {
   Remove-Item (Join-Path $dsh 'browser') -Recurse -Force -ErrorAction SilentlyContinue

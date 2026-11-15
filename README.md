@@ -39,9 +39,14 @@ cd dsh-edge-bridge
 .\scripts\install.ps1
 ```
 
-The installer copies the runtime to `%USERPROFILE%\.dsh\browser\app`, installs the
-`edge-browser` skill to `%USERPROFILE%\.dsh\skills\edge-browser`, and creates
+The installer links the runtime to `%USERPROFILE%\.dsh\browser\app` and the
+`edge-browser` skill to `%USERPROFILE%\.dsh\skills\edge-browser` as directory
+junctions, so the installed bridge always runs the code in this checkout and the
+skill always matches the repository — no reinstall after a pull. It also creates
 `dshedge.cmd` / `dshedge.ps1` in `%APPDATA%\npm`.
+
+Pass `-Copy` to install standalone copies instead of junctions (useful when the
+checkout will not stay on this machine).
 
 For a manual install, copy `app\` and `skill\` to those locations and put
 this on PATH:

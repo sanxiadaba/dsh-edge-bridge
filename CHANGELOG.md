@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `--tab` now accepts the short id printed by `status`/`tabs` (e.g. `7F466A45`)
+  and any unique id prefix, matching what the CLI displays instead of requiring
+  the full 32-character target id.
+- `scripts/install.ps1` links the runtime and the skill into
+  `%USERPROFILE%\.dsh` as directory junctions instead of copying them, so an
+  installed bridge always runs this checkout. `-Copy` keeps the old behaviour.
+- `scripts/uninstall.ps1` removes junctions safely (it no longer recurses into
+  the repository).
+
 ## 1.3.0
 
 - Fix navigation waits to wait for a new document rather than the old page's

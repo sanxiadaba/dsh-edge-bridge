@@ -413,8 +413,16 @@ class Browser {
       if (!this.activeId) this.activeId = target.id;
     } else if (typeof ref === 'number' || /^\d+$/.test(String(ref))) {
       target = targets[Number(ref)];
-    } else if (/^[0-9a-f]{32}$/i.test(String(ref))) {
-      target = targets.find((t) => t.id.toLowerCase() === String(ref).toLowerCase());
+    } else if (/^[0-9a-f]{4,32}$/i.test(String(ref))) {
+      // Accept a full target id or the short prefix printed by `tabs`/`status`.
+      const lower = String(ref).toLowerCase();
+      const exact = targets.find((t) => t.id.toLowerCase() === lower);
+      if (exact) {
+        target = exact;
+      } else {
+        const hits = targets.filter((t) => t.id.toLowerCase().startsWith(lower));
+        target = hits.length === 1 ? hits[0] : undefined;
+      }
     } else {
       target = targets.find((t) => (t.url || '').includes(String(ref)) || (t.title || '').includes(String(ref)));
     }
