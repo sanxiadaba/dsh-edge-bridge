@@ -1,3 +1,2 @@
-* text=auto eol=lf
+* text=auto
 *.ps1 text eol=crlf
-
